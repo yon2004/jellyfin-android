@@ -88,6 +88,10 @@
             </intent-filter>
         </service>
 
+        <service
+            android:name="org.jellyfin.mobile.player.cast.proxy.ProxyForegroundService"
+            android:exported="false"
+            android:foregroundServiceType="mediaPlayback" />
 
         <receiver
             android:name="androidx.mediarouter.media.MediaTransferReceiver"
