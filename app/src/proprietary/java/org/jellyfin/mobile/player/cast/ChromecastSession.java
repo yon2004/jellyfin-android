@@ -3,6 +3,7 @@ package org.jellyfin.mobile.player.cast;
 import android.app.Activity;
 
 import androidx.annotation.NonNull;
+import androidx.annotation.Nullable;
 
 import com.google.android.gms.cast.ApplicationMetadata;
 import com.google.android.gms.cast.Cast;
@@ -24,6 +25,7 @@ import org.json.JSONObject;
 
 import java.io.IOException;
 import java.util.ArrayList;
+import java.util.List;
 
 /*
  * All of the Chromecast session specific functions should start here.
@@ -61,6 +63,24 @@ public class ChromecastSession {
      * Stores a callback that should be called when the queue status is updated.
      */
     private Runnable queueStatusUpdatedCallback;
+
+    // -------------------------------------------------------------------------
+    // Local stream proxy support
+    // -------------------------------------------------------------------------
+
+    /** Base URL of the local stream proxy, e.g. "http://192.168.1.5:43210". */
+    @Nullable
+    private String proxyBaseUrl;
+    /** The Jellyfin server base URL, used to rewrite sendMessage payloads. */
+    @Nullable
+    private String serverBaseUrl;
+    /** True once ChromecastConnection has started the proxy service. */
+    private boolean proxyStarted = false;
+    /** sendMessage calls queued while the proxy is starting but not yet bound. */
+    private final List<Runnable> pendingSendMessages = new ArrayList<>();
+    /** loadMedia call queued while the proxy is starting but not yet bound. */
+    @Nullable
+    private Runnable pendingLoadMedia;
 
     /**
      * ChromecastSession constructor.
@@ -174,6 +194,42 @@ public class ChromecastSession {
         });
     }
 
+    // -------------------------------------------------------------------------
+    // Local stream proxy setters — called by ChromecastConnection
+    // -------------------------------------------------------------------------
+
+    void setProxyBaseUrl(@Nullable String url) {
+        this.proxyBaseUrl = url;
+        if (url != null) {
+            // Flush any sendMessage calls queued before the proxy was bound
+            if (!pendingSendMessages.isEmpty()) {
+                List<Runnable> toFlush = new ArrayList<>(pendingSendMessages);
+                pendingSendMessages.clear();
+                for (Runnable r : toFlush) r.run();
+            }
+            // Flush any pending loadMedia call
+            if (pendingLoadMedia != null) {
+                Runnable pending = pendingLoadMedia;
+                pendingLoadMedia = null;
+                pending.run();
+            }
+        }
+    }
+
+    void setServerBaseUrl(@Nullable String url) {
+        this.serverBaseUrl = url;
+    }
+
+    void setProxyStarted(boolean started) {
+        this.proxyStarted = started;
+        if (!started) {
+            pendingLoadMedia = null;
+            pendingSendMessages.clear();
+        }
+    }
+
+    // -------------------------------------------------------------------------
+
     /**
      * Adds a message listener if one does not already exist.
      *
@@ -204,7 +260,22 @@ public class ChromecastSession {
             callback.error("session_error");
             return;
         }
-        activity.runOnUiThread(() -> session.sendMessage(namespace, message).setResultCallback(result -> {
+        // If the proxy has started but isn't bound yet, queue this message so it
+        // can be replayed with the rewritten URL once the proxy is ready.
+        if (proxyStarted && proxyBaseUrl == null) {
+            pendingSendMessages.add(() -> sendMessage(namespace, message, callback));
+            return;
+        }
+        // Rewrite any Jellyfin server URLs in the message JSON to go through the proxy.
+        // The Jellyfin receiver gets serverAddress from sendMessage, so this is where
+        // the URL must be replaced — not in loadMedia.
+        final String outgoingMessage;
+        if (proxyBaseUrl != null && serverBaseUrl != null && message.contains(serverBaseUrl)) {
+            outgoingMessage = message.replace(serverBaseUrl, proxyBaseUrl);
+        } else {
+            outgoingMessage = message;
+        }
+        activity.runOnUiThread(() -> session.sendMessage(namespace, outgoingMessage).setResultCallback(result -> {
             if (result.isSuccess()) {
                 callback.success();
             } else {
@@ -234,8 +305,18 @@ public class ChromecastSession {
             callback.error("session_error");
             return;
         }
+        // If the proxy is starting but not yet bound, queue this call so the
+        // stream URL gets rewritten once the proxy URL is available.
+        if (proxyStarted && proxyBaseUrl == null) {
+            pendingLoadMedia = () -> loadMedia(contentId, customData, contentType, duration, streamType, autoPlay, currentTime, metadata, textTrackStyle, callback);
+            return;
+        }
         activity.runOnUiThread(() -> {
-            MediaInfo mediaInfo = ChromecastUtilities.createMediaInfo(contentId, customData, contentType, duration, streamType, metadata, textTrackStyle);
+            // Rewrite the content URL to go through the local proxy if active.
+            final String finalContentId = (proxyBaseUrl != null && serverBaseUrl != null && contentId.contains(serverBaseUrl))
+                    ? contentId.replace(serverBaseUrl, proxyBaseUrl)
+                    : contentId;
+            MediaInfo mediaInfo = ChromecastUtilities.createMediaInfo(finalContentId, customData, contentType, duration, streamType, metadata, textTrackStyle);
             MediaLoadRequestData loadRequest = new MediaLoadRequestData.Builder()
                     .setMediaInfo(mediaInfo)
                     .setAutoplay(autoPlay)
