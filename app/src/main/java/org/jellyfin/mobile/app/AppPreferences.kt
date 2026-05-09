@@ -148,6 +148,10 @@ class AppPreferences(context: Context) {
 
     val exoPlayerDirectPlayAss: Boolean
         get() = sharedPreferences.getBoolean(Constants.PREF_EXOPLAYER_DIRECT_PLAY_ASS, false)
+    
+    var castLocalProxyEnabled: Boolean
+        get() = sharedPreferences.getBoolean(Constants.PREF_CAST_LOCAL_PROXY_ENABLED, false)
+        set(value) = sharedPreferences.edit { putBoolean(Constants.PREF_CAST_LOCAL_PROXY_ENABLED, value) }
 
     @ExternalPlayerPackage
     var externalPlayerApp: String
