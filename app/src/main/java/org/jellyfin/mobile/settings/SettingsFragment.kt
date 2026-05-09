@@ -204,6 +204,14 @@ class SettingsFragment : Fragment(), BackPressInterceptor {
                 }
             }
         }
+        categoryHeader(PREF_CATEGORY_CAST) {
+            titleRes = R.string.pref_category_cast
+        }
+        checkBox(Constants.PREF_CAST_LOCAL_PROXY_ENABLED) {
+            titleRes = R.string.pref_cast_local_proxy_enabled_title
+            summaryRes = R.string.pref_cast_local_proxy_enabled_summary_off
+            summaryOnRes = R.string.pref_cast_local_proxy_enabled_summary_on
+        }
         categoryHeader(PREF_CATEGORY_DOWNLOADS) {
             titleRes = R.string.pref_category_downloads
         }
@@ -249,6 +257,7 @@ class SettingsFragment : Fragment(), BackPressInterceptor {
     companion object {
         const val PREF_CATEGORY_MUSIC_PLAYER = "pref_category_music"
         const val PREF_CATEGORY_VIDEO_PLAYER = "pref_category_video"
+        const val PREF_CATEGORY_CAST = "pref_category_cast"
         const val PREF_CATEGORY_DOWNLOADS = "pref_category_downloads"
     }
 }
