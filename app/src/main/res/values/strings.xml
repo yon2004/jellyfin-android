@@ -122,6 +122,12 @@
     <string name="pref_subtitle_style">Customize subtitle style</string>
     <string name="pref_subtitle_style_summary">You can change the subtitle style in the Android settings</string>
 
+    <!-- Cast settings -->
+    <string name="pref_category_cast">Google Cast</string>
+    <string name="pref_cast_local_proxy_enabled_title">Local stream relay</string>
+    <string name="pref_cast_local_proxy_enabled_summary_off">Route Chromecast streams through this phone (needed when casting over Tailscale or VPN)</string>
+    <string name="pref_cast_local_proxy_enabled_summary_on">Active — Chromecast streams are relayed through this device</string>
+
     <string name="pref_category_downloads">Downloads</string>
     <string name="pref_download_location">Download location</string>
     <string name="view_downloads">View downloads</string>
