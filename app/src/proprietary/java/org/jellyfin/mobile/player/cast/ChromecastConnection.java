@@ -2,9 +2,14 @@ package org.jellyfin.mobile.player.cast;
 
 import android.app.Activity;
 import android.app.AlertDialog;
+import android.content.ComponentName;
+import android.content.Context;
+import android.content.Intent;
+import android.content.ServiceConnection;
 import android.content.SharedPreferences;
 import android.os.Bundle;
 import android.os.Handler;
+import android.os.IBinder;
 import android.os.Looper;
 
 import androidx.annotation.NonNull;
@@ -25,7 +30,9 @@ import com.google.android.gms.cast.framework.SessionManager;
 import com.google.android.gms.cast.framework.SessionManagerListener;
 
 import org.jellyfin.mobile.R;
+import org.jellyfin.mobile.app.AppPreferences;
 import org.jellyfin.mobile.bridge.JavascriptCallback;
+import org.jellyfin.mobile.player.cast.proxy.ProxyForegroundService;
 import org.json.JSONObject;
 
 import java.util.ArrayList;
@@ -68,6 +75,32 @@ public class ChromecastConnection {
      */
     @NonNull
     private String appId;
+
+    // -------------------------------------------------------------------------
+    // Local stream proxy
+    // -------------------------------------------------------------------------
+
+    /** ServiceConnection for the proxy foreground service. Non-null while bound. */
+    @Nullable
+    private ServiceConnection proxyServiceConnection;
+
+    /**
+     * The Jellyfin server base URL, set by WebViewFragment via {@link #setServerBaseUrl}.
+     * Used in onSessionStarted to start the local proxy without needing a contentId.
+     */
+    @Nullable
+    private String serverBaseUrl;
+
+    /**
+     * Called by WebViewFragment as soon as the server is known so the proxy
+     * can be started with the correct upstream URL when a Cast session begins.
+     */
+    public void setServerBaseUrl(@NonNull String baseUrl) {
+        this.serverBaseUrl = baseUrl;
+        chromecastSession.setServerBaseUrl(baseUrl);
+    }
+
+    // -------------------------------------------------------------------------
 
     /**
      * Constructor.
@@ -374,6 +407,53 @@ public class ChromecastConnection {
         });
     }
 
+    // -------------------------------------------------------------------------
+    // Local stream proxy — lifecycle
+    // -------------------------------------------------------------------------
+
+    private void startLocalProxyIfEnabled(@NonNull String jellyfinBaseUrl) {
+        final Activity act = activity;
+        if (act == null) return;
+        if (!new AppPreferences(act).getCastLocalProxyEnabled()) return;
+
+        stopLocalProxy();
+        ProxyForegroundService.start(act, jellyfinBaseUrl);
+
+        proxyServiceConnection = new ServiceConnection() {
+            @Override
+            public void onServiceConnected(ComponentName name, IBinder binder) {
+                String proxyUrl = ((ProxyForegroundService.ProxyBinder) binder).getProxyBaseUrl();
+                if (proxyUrl != null) {
+                    chromecastSession.setProxyBaseUrl(proxyUrl);
+                }
+            }
+            @Override
+            public void onServiceDisconnected(ComponentName name) {
+                chromecastSession.setProxyBaseUrl(null);
+            }
+        };
+
+        chromecastSession.setProxyStarted(true);
+        act.bindService(
+                new Intent(act, ProxyForegroundService.class),
+                proxyServiceConnection,
+                Context.BIND_AUTO_CREATE
+        );
+    }
+
+    private void stopLocalProxy() {
+        chromecastSession.setProxyStarted(false);
+        final Activity act = activity;
+        if (proxyServiceConnection != null && act != null) {
+            try { act.unbindService(proxyServiceConnection); } catch (IllegalArgumentException ignored) { }
+            proxyServiceConnection = null;
+        }
+        if (act != null) ProxyForegroundService.stop(act);
+        chromecastSession.setProxyBaseUrl(null);
+    }
+
+    // -------------------------------------------------------------------------
+
     /**
      * Must be called from the main thread.
      *
@@ -387,6 +467,11 @@ public class ChromecastConnection {
             public void onSessionStarted(@NonNull CastSession castSession, @NonNull String sessionId) {
                 getSessionManager().removeSessionManagerListener(this, CastSession.class);
                 chromecastSession.setSession(castSession);
+                // Start the local stream proxy so Chromecast requests are relayed
+                // through the phone rather than going directly to the Jellyfin server.
+                if (serverBaseUrl != null) {
+                    startLocalProxyIfEnabled(serverBaseUrl);
+                }
                 callback.onJoin(ChromecastUtilities.createSessionObject(castSession));
             }
 
@@ -501,6 +586,7 @@ public class ChromecastConnection {
                     public void onSessionEnded(@NonNull CastSession castSession, int error) {
                         getSessionManager().removeSessionManagerListener(this, CastSession.class);
                         chromecastSession.setSession(null);
+                        stopLocalProxy();
                         if (callback != null) {
                             callback.success();
                         }
@@ -515,6 +601,7 @@ public class ChromecastConnection {
 
     public void destroy() {
         getSessionManager().removeSessionManagerListener(newConnectionListener, CastSession.class);
+        stopLocalProxy();
         handler.removeCallbacksAndMessages(null);
         activity = null;
     }
