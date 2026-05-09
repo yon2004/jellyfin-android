@@ -2,6 +2,7 @@ package org.jellyfin.mobile.player.cast;
 
 import android.app.Activity;
 
+import androidx.annotation.NonNull;
 import androidx.mediarouter.media.MediaRouter.RouteInfo;
 
 import com.google.android.gms.cast.CastDevice;
@@ -561,6 +562,18 @@ public final class Chromecast implements IChromecast {
             return;
         }
         eventCallback.success(true, new JSONArray().put(eventName).put(args));
+    }
+
+    /**
+     * Sets the Jellyfin server base URL so the local stream proxy knows where to forward
+     * Chromecast requests. Called by WebViewFragment as soon as the server is known.
+     *
+     * @param baseUrl the server base URL, e.g. "https://jellyfin.tail1234.ts.net"
+     */
+    public void setServerBaseUrl(@NonNull String baseUrl) {
+        if (connection != null) {
+            connection.setServerBaseUrl(baseUrl);
+        }
     }
 
     public void destroy() {
