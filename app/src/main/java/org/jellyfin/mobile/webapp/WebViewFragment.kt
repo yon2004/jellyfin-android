@@ -47,6 +47,7 @@ import org.jellyfin.mobile.utils.isOutdated
 import org.jellyfin.mobile.utils.requestNoBatteryOptimizations
 import org.jellyfin.mobile.utils.runOnUiThread
 import org.koin.android.ext.android.inject
+import org.jellyfin.mobile.MainActivity
 
 class WebViewFragment : Fragment(), BackPressInterceptor, JellyfinWebChromeClient.FileChooserListener {
     val appPreferences: AppPreferences by inject()
@@ -83,6 +84,15 @@ class WebViewFragment : Fragment(), BackPressInterceptor, JellyfinWebChromeClien
         super.onCreate(savedInstanceState)
         server = requireNotNull(requireArguments().getParcelableCompat(FRAGMENT_WEB_VIEW_EXTRA_SERVER)) {
             "Server entity has not been supplied!"
+        }
+
+        // Give ChromecastConnection the server URL so the local stream proxy
+        // knows where to forward requests when a Cast session starts.
+        // Cast to Chromecast (concrete class) since IChromecast may not expose setServerBaseUrl.
+        (requireActivity() as? MainActivity)?.chromecast?.let { chromecast ->
+            if (chromecast is org.jellyfin.mobile.player.cast.Chromecast) {
+                chromecast.setServerBaseUrl(server.hostname)
+            }
         }
 
         assetsPathHandler = AssetsPathHandler(requireContext())
