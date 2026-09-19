@@ -7,5 +7,6 @@ import org.json.JSONArray
 class Chromecast : IChromecast {
     override fun initializePlugin(activity: Activity) = Unit
     override fun execute(action: String, args: JSONArray, cbContext: JavascriptCallback) = false
+    override fun setServerBaseUrl(baseUrl: String) = Unit
     override fun destroy() = Unit
 }

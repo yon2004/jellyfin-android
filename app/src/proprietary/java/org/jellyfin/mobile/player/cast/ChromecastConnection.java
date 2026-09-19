@@ -3,8 +3,13 @@ package org.jellyfin.mobile.player.cast;
 import android.app.Activity;
 import android.app.AlertDialog;
 import android.content.SharedPreferences;
+import android.content.ComponentName;
+import android.content.Context;
+import android.content.Intent;
+import android.content.ServiceConnection;
 import android.os.Bundle;
 import android.os.Handler;
+import android.os.IBinder;
 import android.os.Looper;
 
 import androidx.annotation.NonNull;
@@ -25,12 +30,16 @@ import com.google.android.gms.cast.framework.SessionManager;
 import com.google.android.gms.cast.framework.SessionManagerListener;
 
 import org.jellyfin.mobile.R;
+import org.jellyfin.mobile.app.AppPreferences;
 import org.jellyfin.mobile.bridge.JavascriptCallback;
+import org.jellyfin.mobile.player.cast.proxy.ProxyForegroundService;
 import org.json.JSONObject;
 
+import java.net.InetAddress;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
+
 
 public class ChromecastConnection {
 
@@ -69,6 +78,134 @@ public class ChromecastConnection {
     @NonNull
     private String appId;
 
+    /**
+     * ServiceConnection for the proxy foreground service. Non-null while bound.
+     */
+    @Nullable
+    private ServiceConnection proxyServiceConnection;
+
+    /**
+     * The Jellyfin server base URL, set by WebViewFragment via {@link #setServerBaseUrl}.
+     * Used in onSessionStarted to start the local proxy without needing a contentId.
+     */
+    @Nullable
+    private String serverBaseUrl;
+
+    public void setServerBaseUrl(@NonNull String baseUrl) {
+        // Trim the trailing slash once, here.
+        String normalised = baseUrl.endsWith("/")
+                ? baseUrl.substring(0, baseUrl.length() - 1)
+                : baseUrl;
+        this.serverBaseUrl = normalised;
+        chromecastSession.setServerBaseUrl(normalised);
+    }
+
+    private void startLocalProxyIfEnabled(@NonNull String jellyfinBaseUrl, @Nullable CastSession session) {
+        final Activity act = activity;
+        if (act == null) {
+            return;
+        }
+
+        if (!new AppPreferences(act).getCastLocalProxyEnabled()) {
+            return;
+        }
+
+        // Clear down anything left over from a previous session before starting again.
+        stopLocalProxy();
+
+        final String deviceAddress = resolveCastDeviceAddress(session);
+
+        // Tell ChromecastSession to start queueing before anything async happens, so a
+        // loadMedia arriving in the gap is held rather than sent with an unrewritten URL.
+        chromecastSession.setProxyStarted(true);
+
+        proxyServiceConnection = new ServiceConnection() {
+            @Override
+            public void onServiceConnected(ComponentName name, IBinder binder) {
+                ProxyForegroundService.ProxyBinder proxyBinder =
+                        (ProxyForegroundService.ProxyBinder) binder;
+
+                // Fires immediately if the proxy already resolved before we bound,
+                // otherwise as soon as it does.
+                proxyBinder.setListener((proxyUrl, failureReason) -> {
+                    if (proxyUrl != null) {
+                        chromecastSession.setProxyBaseUrl(proxyUrl);
+                    } else {
+                        chromecastSession.setProxyFailed(failureReason);
+                    }
+                });
+            }
+
+            @Override
+            public void onServiceDisconnected(ComponentName name) {
+                // The process hosting the service died. Release anything queued rather
+                // than leaving the web client waiting on callbacks that will never fire.
+                chromecastSession.setProxyFailed("Relay service stopped unexpectedly");
+            }
+        };
+
+        boolean bound = act.bindService(
+                new Intent(act, ProxyForegroundService.class),
+                proxyServiceConnection,
+                Context.BIND_AUTO_CREATE
+        );
+
+        if (!bound) {
+            proxyServiceConnection = null;
+            chromecastSession.setProxyFailed("Could not bind the relay service");
+            return;
+        }
+
+        // Started after the bind so the same instance handles both.
+        ProxyForegroundService.start(act, jellyfinBaseUrl, deviceAddress);
+    }
+
+    private void stopLocalProxy() {
+        // setProxyStarted(false) releases anything queued with an error, so this is safe
+        // to call unconditionally, including when no proxy was ever started.
+        chromecastSession.setProxyStarted(false);
+        chromecastSession.setProxyBaseUrl(null);
+
+        final Activity act = activity;
+        if (proxyServiceConnection != null && act != null) {
+            try {
+                act.unbindService(proxyServiceConnection);
+            } catch (IllegalArgumentException ignored) {
+                // Not bound — nothing to do.
+            }
+        }
+        proxyServiceConnection = null;
+
+        if (act != null) {
+            ProxyForegroundService.stop(act);
+        }
+    }
+
+    /**
+     * The Chromecast's own IP, used to pick a local interface on the same subnet and to
+     * reject connections from anything else.
+     * getInetAddress() is deprecated and may return null on current Play Services. That is
+     * not fatal: the resolver falls back to the first Wi-Fi candidate and the relay relies
+     * on its path token alone. Returning null here is expected, not an error.
+     */
+    @Nullable
+    private String resolveCastDeviceAddress(@Nullable CastSession session) {
+        if (session == null) {
+            return null;
+        }
+        CastDevice device = session.getCastDevice();
+        if (device == null) {
+            return null;
+        }
+        try {
+            InetAddress address = device.getInetAddress();
+            return address != null ? address.getHostAddress() : null;
+        } catch (Throwable ignored) {
+            // Deprecated API, may be stubbed out entirely on newer Play Services.
+            return null;
+        }
+    }
+
     // Fires for every session end, whoever caused it - our own endSession() or the chromecast receiver (idle timeout, TV home, etc.)
     // Status must be "stopped", the only value chrome.cast.js reports as dead,
     // so jellyfin-web correctly drops the player instead of staying "connected"
@@ -76,6 +213,7 @@ public class ChromecastConnection {
         @Override
         public void onSessionEnded(@NonNull CastSession castSession, int error) {
             chromecastSession.setSession(null);
+            stopLocalProxy();
             listener.onSessionEnd(ChromecastUtilities.createSessionObject(castSession, "stopped"));
         }
     };
@@ -403,6 +541,9 @@ public class ChromecastConnection {
             public void onSessionStarted(@NonNull CastSession castSession, @NonNull String sessionId) {
                 getSessionManager().removeSessionManagerListener(this, CastSession.class);
                 chromecastSession.setSession(castSession);
+                if (serverBaseUrl != null) {
+                    startLocalProxyIfEnabled(serverBaseUrl, castSession);
+                }
                 callback.onJoin(ChromecastUtilities.createSessionObject(castSession));
             }
 
@@ -531,6 +672,7 @@ public class ChromecastConnection {
     public void destroy() {
         getSessionManager().removeSessionManagerListener(newConnectionListener, CastSession.class);
         getSessionManager().removeSessionManagerListener(sessionListener, CastSession.class);
+        stopLocalProxy();
         handler.removeCallbacksAndMessages(null);
         activity = null;
     }

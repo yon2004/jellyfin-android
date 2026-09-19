@@ -23,6 +23,7 @@ import androidx.lifecycle.lifecycleScope
 import androidx.webkit.WebViewAssetLoader.AssetsPathHandler
 import androidx.webkit.WebViewCompat
 import kotlinx.coroutines.launch
+import org.jellyfin.mobile.MainActivity
 import org.jellyfin.mobile.MainViewModel
 import org.jellyfin.mobile.R
 import org.jellyfin.mobile.app.AppPreferences
@@ -85,6 +86,10 @@ class WebViewFragment : Fragment(), BackPressInterceptor, JellyfinWebChromeClien
         server = requireNotNull(requireArguments().getParcelableCompat(FRAGMENT_WEB_VIEW_EXTRA_SERVER)) {
             "Server entity has not been supplied!"
         }
+
+        // Supply the server URL so the Cast relay knows where to forward requests.
+        // No-op in the libre flavour.
+        (requireActivity() as? MainActivity)?.chromecast?.setServerBaseUrl(server.hostname)
 
         assetsPathHandler = AssetsPathHandler(requireContext())
         jellyfinWebViewClient = object : JellyfinWebViewClient(

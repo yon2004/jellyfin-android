@@ -1,6 +1,8 @@
 package org.jellyfin.mobile.player.cast;
 
 import android.app.Activity;
+import android.os.Handler;
+import android.os.Looper;
 
 import androidx.annotation.NonNull;
 
@@ -24,6 +26,7 @@ import org.json.JSONObject;
 
 import java.io.IOException;
 import java.util.ArrayList;
+import java.util.List;
 
 /*
  * All of the Chromecast session specific functions should start here.
@@ -61,6 +64,17 @@ public class ChromecastSession {
      * Stores a callback that should be called when the queue status is updated.
      */
     private Runnable queueStatusUpdatedCallback;
+
+    private volatile String proxyBaseUrl;
+    private volatile String serverBaseUrl;
+    private volatile boolean proxyStarted = false;
+
+    private final List<Runnable> pendingCalls = new ArrayList<>();
+    private final List<JavascriptCallback> pendingCallbacks = new ArrayList<>();
+    private final Handler proxyHandler = new Handler(Looper.getMainLooper());
+    private Runnable proxyTimeout;
+
+    private static final long PROXY_READY_TIMEOUT_MS = 10_000L;
 
     /**
      * ChromecastSession constructor.
@@ -175,6 +189,77 @@ public class ChromecastSession {
         });
     }
 
+    void setProxyStarted(boolean started) {
+        this.proxyStarted = started;
+        if (started) {
+            // Never queue forever. If the relay has not reported in by now it is not coming.
+            proxyTimeout = () -> setProxyFailed("Relay did not start in time");
+            proxyHandler.postDelayed(proxyTimeout, PROXY_READY_TIMEOUT_MS);
+        } else {
+            cancelTimeout();
+            failPending("Relay stopped");
+        }
+    }
+
+    void setProxyBaseUrl(String url) {
+        this.proxyBaseUrl = url;
+        if (url == null) return;
+        cancelTimeout();
+        synchronized (pendingCalls) {
+            List<Runnable> toRun = new ArrayList<>(pendingCalls);
+            pendingCalls.clear();
+            pendingCallbacks.clear();
+            for (Runnable r : toRun) r.run();
+        }
+    }
+
+    void setProxyFailed(String reason) {
+        cancelTimeout();
+        this.proxyStarted = false;
+        this.proxyBaseUrl = null;
+        failPending(reason != null ? reason : "Relay unavailable");
+    }
+
+    void setServerBaseUrl(String url) {
+        this.serverBaseUrl = url;
+    }
+
+    private void cancelTimeout() {
+        if (proxyTimeout != null) {
+            proxyHandler.removeCallbacks(proxyTimeout);
+            proxyTimeout = null;
+        }
+    }
+
+    /** Releases queued calls with an error so the web client stops waiting. */
+    private void failPending(String reason) {
+        synchronized (pendingCalls) {
+            pendingCalls.clear();
+            for (JavascriptCallback cb : pendingCallbacks) {
+                cb.error("proxy_error: " + reason);
+            }
+            pendingCallbacks.clear();
+        }
+    }
+
+    private boolean queueUntilProxyReady(Runnable call, JavascriptCallback callback) {
+        if (!proxyStarted || proxyBaseUrl != null) return false;
+        synchronized (pendingCalls) {
+            pendingCalls.add(call);
+            pendingCallbacks.add(callback);
+        }
+        return true;
+    }
+
+    private String rewriteForProxy(String value) {
+        String proxy = proxyBaseUrl;
+        String server = serverBaseUrl;
+        if (proxy == null || server == null || value == null || !value.contains(server)) {
+            return value;
+        }
+        return value.replace(server, proxy);
+    }
+
     /**
      * Adds a message listener if one does not already exist.
      *
@@ -205,7 +290,11 @@ public class ChromecastSession {
             callback.error("session_error");
             return;
         }
-        activity.runOnUiThread(() -> session.sendMessage(namespace, message).setResultCallback(result -> {
+        if (queueUntilProxyReady(() -> sendMessage(namespace, message, callback), callback)) {
+            return;
+        }
+        final String outgoingMessage = rewriteForProxy(message);
+        activity.runOnUiThread(() -> session.sendMessage(namespace, outgoingMessage).setResultCallback(result -> {
             if (result.isSuccess()) {
                 callback.success();
             } else {
@@ -235,8 +324,15 @@ public class ChromecastSession {
             callback.error("session_error");
             return;
         }
+        if (queueUntilProxyReady(
+                () -> loadMedia(contentId, customData, contentType, duration, streamType,
+                        autoPlay, currentTime, metadata, textTrackStyle, callback),
+                callback)) {
+            return;
+        }
         activity.runOnUiThread(() -> {
-            MediaInfo mediaInfo = ChromecastUtilities.createMediaInfo(contentId, customData, contentType, duration, streamType, metadata, textTrackStyle);
+            final String finalContentId = rewriteForProxy(contentId);
+            MediaInfo mediaInfo = ChromecastUtilities.createMediaInfo(finalContentId, customData, contentType, duration, streamType, metadata, textTrackStyle);
             MediaLoadRequestData loadRequest = new MediaLoadRequestData.Builder()
                     .setMediaInfo(mediaInfo)
                     .setAutoplay(autoPlay)

@@ -165,6 +165,7 @@ dependencies {
         }
     }
     implementation(libs.bundles.coil)
+    proprietaryImplementation(libs.okhttp)
 
     // Media
     implementation(libs.androidx.media)

@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    Goes at app/src/proprietary/AndroidManifest.xml
+
+    The relay service only exists in the proprietary source set, so its declaration
+    belongs here rather than in app/src/main/AndroidManifest.xml. Declaring it in main
+    leaves the libre APK with a manifest entry pointing at a missing class.
+
+    foregroundServiceType is dataSync, not mediaPlayback: the phone is relaying bytes,
+    not playing media, and mediaPlayback carries MediaSession prerequisites on API 34+
+    that this service cannot satisfy. FOREGROUND_SERVICE_DATA_SYNC is already declared
+    in the main manifest, so nothing extra is needed there.
+-->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <application>
+        <service
+            android:name="org.jellyfin.mobile.player.cast.proxy.ProxyForegroundService"
+            android:exported="false"
+            android:foregroundServiceType="dataSync" />
+    </application>
+
+</manifest>
